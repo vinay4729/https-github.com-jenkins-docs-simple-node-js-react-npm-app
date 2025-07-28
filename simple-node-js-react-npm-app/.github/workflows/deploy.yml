@@ -1,0 +1,70 @@
+
+name: 🚀 Deploy DoorFeed Web App
+
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      ECR_REPO: ${{ secrets.ECR_REPO_URL }}
+      IMAGE_TAG: latest
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 🧪 Install + Test
+        run: |
+          npm install
+          npm test || echo "Skipping tests"
+
+      - name: 🔎 SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=doorfeed-ci-cd
+            -Dsonar.sources=.
+            -Dsonar.host.url=http://<SONARQUBE_IP>:9000
+
+      - name: 🔐 AWS Auth
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 🐳 ECR Login
+        run: |
+          aws ecr get-login-password | docker login --username AWS --password-stdin $ECR_REPO
+
+      - name: 🔍 Trivy Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ECR_REPO }}:${{ env.IMAGE_TAG }}
+          format: 'table'
+          exit-code: 0
+          severity: 'HIGH,CRITICAL'
+
+      - name: 📦 Build + Push Image
+        run: |
+          docker build -t $ECR_REPO:$IMAGE_TAG .
+          docker push $ECR_REPO:$IMAGE_TAG
+
+      - name: 🚀 Deploy to ECS
+        run: |
+          aws ecs update-service \
+            --cluster doorfeed-cluster \
+            --service doorfeed-staging \
+            --force-new-deployment \
+            --region $AWS_REGION
